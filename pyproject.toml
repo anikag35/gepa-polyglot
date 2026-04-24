@@ -9,3 +9,13 @@ dependencies = [
     "grpcio>=1.78.0",
     "grpcio-tools>=1.78.0",
 ]
+
+[project.scripts]
+gepa-rpc = "gepa_rpc.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["gepa_rpc*"]
