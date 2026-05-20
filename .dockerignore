@@ -1,0 +1,12 @@
+.git
+.venv
+sdk/
+*.pyc
+__pycache__
+.python-version
+uv.lock
+main.py
+proto/
+scripts/
+README.md
+.DS_Store
