@@ -21,17 +21,16 @@ from typing import Any
 import grpc
 
 import gepa
+from gepa.optimize_anything import OptimizeAnythingConfig, optimize_anything
 
-from gepa_rpc.adapter import RemoteAdapter
+from gepa_rpc.adapter import OmniRemoteEvaluator, RemoteAdapter
 from gepa_rpc.conversions import RemoteExample
 from gepa_rpc.generated import gepa_pb2 as pb
 from gepa_rpc.generated import gepa_pb2_grpc as pb_grpc
 
 logger = logging.getLogger(__name__)
 
-# TODO: make configurable via StartRequest.reflection_lm; hardcoded per spec.
-HARDCODED_REFLECTION_LM = "gpt-5"
-
+DEFAULT_REFLECTION_LM = "openai/gpt-5.1"
 DEFAULT_RUNS_DIR = os.environ.get("GEPA_RPC_RUNS_DIR", "./runs")
 
 
@@ -70,6 +69,49 @@ class _ProgressCallback:
             best_candidate=self._best_candidate,
         )
         self._outbound.put(pb.ServerMessage(progress_update=update))
+
+
+class _OmniProgressCallback:
+    """Bridges gepa callback events to OmniProgressUpdate messages on the stream."""
+
+    def __init__(
+        self,
+        outbound: "queue.Queue[pb.OmniServerMessage | None]",
+        max_evals: int,
+        run_status: dict[str, Any],
+    ):
+        self._outbound = outbound
+        self._max_evals = max_evals
+        self._run_status = run_status
+        self._best_score = float("-inf")
+        self._best_candidate = ""
+
+    def on_budget_updated(self, event: dict[str, Any]) -> None:
+        used = int(event["metric_calls_used"])
+        self._run_status["metric_calls_used"] = used
+        self._emit(used)
+
+    def on_valset_evaluated(self, event: dict[str, Any]) -> None:
+        avg = float(event["average_score"])
+        if avg > self._best_score:
+            self._best_score = avg
+            # Gepa internally wraps a string seed as {"current_candidate": "..."},
+            # so unwrap single-key dicts back to their string value.
+            candidate = event["candidate"]
+            if isinstance(candidate, dict):
+                self._best_candidate = next(iter(candidate.values()), "") if len(candidate) == 1 else str(candidate)
+            else:
+                self._best_candidate = str(candidate)
+            self._emit(self._run_status.get("metric_calls_used", 0))
+
+    def _emit(self, evals_used: int) -> None:
+        update = pb.OmniProgressUpdate(
+            evals_used=evals_used,
+            max_evals=self._max_evals,
+            best_score=self._best_score if self._best_score != float("-inf") else 0.0,
+            best_candidate=self._best_candidate,
+        )
+        self._outbound.put(pb.OmniServerMessage(progress_update=update))
 
 
 class GEPAServicer(pb_grpc.GEPAServiceServicer):
@@ -155,7 +197,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                     trainset=trainset,
                     valset=valset,
                     adapter=adapter,
-                    reflection_lm=HARDCODED_REFLECTION_LM,
+                    reflection_lm=start_req.reflection_lm or DEFAULT_REFLECTION_LM,
                     max_metric_calls=max_metric_calls,
                     run_dir=run_dir,
                     callbacks=[callback],
@@ -190,6 +232,108 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
 
         threading.Thread(target=reader, name=f"gepa-rpc-reader-{run_id}", daemon=True).start()
         threading.Thread(target=runner, name=f"gepa-rpc-runner-{run_id}", daemon=True).start()
+
+        while True:
+            msg = outbound.get()
+            if msg is None:
+                return
+            yield msg
+
+    # ------------------------------------------------------- omni optimization
+    def RunOptimizationOmni(self, request_iterator, context: grpc.ServicerContext):
+        try:
+            first = next(request_iterator)
+        except StopIteration:
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            context.set_details("client closed stream before sending start_request")
+            return
+
+        if not first.HasField("start_request"):
+            context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+            context.set_details("first OmniClientMessage must contain start_request")
+            return
+
+        start_req = first.start_request
+        run_id = start_req.run_id or "unnamed"
+        run_dir = os.path.join(self._runs_dir, run_id)
+
+        run_status: dict[str, Any] = {"status": "running", "metric_calls_used": 0, "message": ""}
+        with self._runs_lock:
+            self._runs[run_id] = run_status
+
+        outbound: "queue.Queue[pb.OmniServerMessage | None]" = queue.Queue()
+        evaluator = OmniRemoteEvaluator(outbound)
+
+        def reader() -> None:
+            try:
+                for msg in request_iterator:
+                    if msg.HasField("evaluate_batch_response"):
+                        evaluator.deliver_response(msg.evaluate_batch_response)
+                    elif msg.HasField("start_request"):
+                        logger.warning("ignoring extra start_request after omni run started")
+            except Exception as e:
+                logger.info("omni client stream closed: %s", e)
+                evaluator.cancel(e)
+            else:
+                evaluator.cancel()
+
+        def runner() -> None:
+            try:
+                dataset = [
+                    {"id": e.id, "fields": dict(e.fields)}
+                    for e in start_req.dataset
+                ]
+                valset = [
+                    {"id": e.id, "fields": dict(e.fields)}
+                    for e in start_req.valset
+                ] or None
+
+                max_evals = start_req.max_evals or None
+                callback = _OmniProgressCallback(outbound, start_req.max_evals, run_status)
+
+                os.makedirs(run_dir, exist_ok=True)
+                result = optimize_anything(
+                    seed_candidate=start_req.seed_candidate or None,
+                    batch_evaluator=evaluator,
+                    dataset=dataset or None,
+                    valset=valset,
+                    objective=start_req.objective or None,
+                    config=OptimizeAnythingConfig(
+                        engine="gepa",
+                        max_evals=max_evals,
+                        run_dir=run_dir,
+                        sandbox=False,
+                        engine_config={
+                            "reflection": {
+                                "reflection_lm": start_req.reflection_lm or DEFAULT_REFLECTION_LM,
+                            },
+                            "callbacks": [callback],
+                        },
+                    ),
+                )
+
+                run_status["status"] = "complete"
+                outbound.put(pb.OmniServerMessage(
+                    optimization_complete=pb.OmniOptimizationComplete(
+                        run_id=run_id,
+                        best_candidate=result.best_candidate,
+                        best_score=float(result.best_score),
+                        total_evals=result.total_evals,
+                    )
+                ))
+            except Exception as e:
+                logger.exception("omni optimization run %s failed", run_id)
+                run_status["status"] = "failed"
+                run_status["message"] = str(e)
+                outbound.put(pb.OmniServerMessage(
+                    optimization_error=pb.OptimizationError(run_id=run_id, message=str(e))
+                ))
+            finally:
+                outbound.put(None)
+                evaluator.cancel()
+
+        threading.Thread(target=reader, name=f"gepa-rpc-omni-reader-{run_id}", daemon=True).start()
+        threading.Thread(target=runner, name=f"gepa-rpc-omni-runner-{run_id}", daemon=True).start()
 
         while True:
             msg = outbound.get()

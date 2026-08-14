@@ -7,6 +7,11 @@ import type {
   EvaluateBatchArgs,
   EvaluateBatchResult,
   Example,
+  OmniEvaluateBatchArgs,
+  OmniEvaluateBatchResult,
+  OmniProgressUpdate,
+  OptimizeOmniOptions,
+  OptimizeOmniResult,
   OptimizeOptions,
   OptimizeResult,
   ProgressUpdate,
@@ -121,6 +126,108 @@ export class Client {
     });
   }
 
+  optimizeOmni(opts: OptimizeOmniOptions): Promise<OptimizeOmniResult> {
+    return new Promise<OptimizeOmniResult>((resolve, reject) => {
+      const call = this.grpcClient.RunOptimizationOmni() as grpc.ClientDuplexStream<
+        any,
+        any
+      >;
+      let settled = false;
+
+      const settle = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        try {
+          call.end();
+        } catch {
+          // already closed
+        }
+        fn();
+      };
+
+      call.on("data", (msg: any) => {
+        if (msg.evaluate_batch_request) {
+          this.handleOmniEvaluate(call, msg.evaluate_batch_request, opts.evaluate)
+            .catch((err) => settle(() => reject(err)));
+        } else if (msg.progress_update) {
+          if (opts.onProgress) {
+            opts.onProgress(toOmniProgressUpdate(msg.progress_update));
+          }
+        } else if (msg.optimization_complete) {
+          const c = msg.optimization_complete;
+          settle(() =>
+            resolve({
+              runId: c.run_id,
+              bestCandidate: c.best_candidate,
+              bestScore: c.best_score,
+              totalEvals: c.total_evals,
+            }),
+          );
+        } else if (msg.optimization_error) {
+          const e = msg.optimization_error;
+          settle(() =>
+            reject(
+              new Error(
+                `optimization ${e.run_id || "(unknown)"} failed: ${e.message}`,
+              ),
+            ),
+          );
+        }
+      });
+
+      call.on("error", (err: Error) => {
+        settle(() => reject(err));
+      });
+
+      call.on("end", () => {
+        settle(() =>
+          reject(
+            new Error(
+              "server closed the stream before sending optimization_complete",
+            ),
+          ),
+        );
+      });
+
+      call.write({
+        start_request: {
+          run_id: opts.runId,
+          seed_candidate: opts.seedCandidate ?? "",
+          dataset: (opts.dataset ?? []).map((e) => ({ id: e.id, fields: e.fields })),
+          valset: (opts.valset ?? []).map((e) => ({ id: e.id, fields: e.fields })),
+          objective: opts.objective ?? "",
+          reflection_lm: opts.reflectionLm ?? "",
+          max_evals: opts.maxEvals ?? 0,
+        },
+      });
+    });
+  }
+
+  private async handleOmniEvaluate(
+    call: grpc.ClientDuplexStream<any, any>,
+    req: any,
+    handler: (args: OmniEvaluateBatchArgs) => Promise<OmniEvaluateBatchResult>,
+  ): Promise<void> {
+    const args: OmniEvaluateBatchArgs = {
+      requestId: req.request_id,
+      candidate: req.candidate,
+      batch: (req.batch ?? []).map(
+        (e: any): Example => ({
+          id: e.id,
+          fields: mapToObject(e.fields),
+        }),
+      ),
+    };
+    const result = await handler(args);
+    call.write({
+      evaluate_batch_response: {
+        request_id: args.requestId,
+        scores: result.scores,
+        side_infos: (result.sideInfos ?? []).map((s) => JSON.stringify(s)),
+      },
+    });
+  }
+
   private async handleEvaluate(
     call: grpc.ClientDuplexStream<any, any>,
     req: any,
@@ -207,5 +314,14 @@ function toProgressUpdate(p: any): ProgressUpdate {
     maxMetricCalls: p.max_metric_calls,
     bestScore: p.best_score,
     bestCandidate: mapToObject(p.best_candidate),
+  };
+}
+
+function toOmniProgressUpdate(p: any): OmniProgressUpdate {
+  return {
+    evalsUsed: p.evals_used,
+    maxEvals: p.max_evals,
+    bestScore: p.best_score,
+    bestCandidate: p.best_candidate,
   };
 }
