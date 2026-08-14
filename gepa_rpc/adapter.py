@@ -1,4 +1,4 @@
-"""RemoteAdapter is a GEPAAdapter whose evaluate/make_reflective_dataset calls
+"""RemoteAdapter is1 a GEPAAdapter whose evaluate/make_reflective_dataset calls
 are proxied across a gRPC stream to a connected client.
 
 The adapter is owned by the server-side RunOptimization handler. It places
