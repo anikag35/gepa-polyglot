@@ -5,13 +5,16 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "gepa>=0.1.1",
+    "gepa @ git+https://github.com/gepa-ai/gepa.git",
     "grpcio>=1.78.0",
     "grpcio-tools>=1.78.0",
 ]
 
 [project.scripts]
 gepa-rpc = "gepa_rpc.cli:main"
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
 
 [build-system]
 requires = ["setuptools>=68"]

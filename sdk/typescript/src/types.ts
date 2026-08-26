@@ -71,3 +71,46 @@ export interface ClientOptions {
   target: string;
   credentials?: ChannelCredentials;
 }
+
+// ------------------------------------------------------------------ Omni types
+
+export interface OmniEvaluateBatchArgs {
+  requestId: string;
+  /** String candidate (prompt, code, instructions, etc.) */
+  candidate: string;
+  batch: Example[];
+}
+
+export interface OmniEvaluateBatchResult {
+  scores: number[];
+  /** Per-example side-info objects (free-form, serialised to JSON by the server). */
+  sideInfos?: Record<string, unknown>[];
+}
+
+export interface OmniProgressUpdate {
+  evalsUsed: number;
+  maxEvals: number;
+  bestScore: number;
+  bestCandidate: string;
+}
+
+export interface OptimizeOmniOptions {
+  runId: string;
+  /** Initial candidate string to optimise from. */
+  seedCandidate?: string;
+  dataset?: Example[];
+  valset?: Example[];
+  objective?: string;
+  reflectionLm?: string;
+  maxEvals?: number;
+
+  evaluate: (args: OmniEvaluateBatchArgs) => Promise<OmniEvaluateBatchResult>;
+  onProgress?: (update: OmniProgressUpdate) => void;
+}
+
+export interface OptimizeOmniResult {
+  runId: string;
+  bestCandidate: string;
+  bestScore: number;
+  totalEvals: number;
+}

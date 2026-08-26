@@ -39,6 +39,11 @@ class GEPAServiceStub(object):
                 request_serializer=gepa__pb2.ClientMessage.SerializeToString,
                 response_deserializer=gepa__pb2.ServerMessage.FromString,
                 _registered_method=True)
+        self.RunOptimizationOmni = channel.stream_stream(
+                '/gepa_rpc.GEPAService/RunOptimizationOmni',
+                request_serializer=gepa__pb2.OmniClientMessage.SerializeToString,
+                response_deserializer=gepa__pb2.OmniServerMessage.FromString,
+                _registered_method=True)
         self.GetStatus = channel.unary_unary(
                 '/gepa_rpc.GEPAService/GetStatus',
                 request_serializer=gepa__pb2.StatusRequest.SerializeToString,
@@ -50,6 +55,12 @@ class GEPAServiceServicer(object):
     """Missing associated documentation comment in .proto file."""
 
     def RunOptimization(self, request_iterator, context):
+        """Missing associated documentation comment in .proto file."""
+        context.set_code(grpc.StatusCode.UNIMPLEMENTED)
+        context.set_details('Method not implemented!')
+        raise NotImplementedError('Method not implemented!')
+
+    def RunOptimizationOmni(self, request_iterator, context):
         """Missing associated documentation comment in .proto file."""
         context.set_code(grpc.StatusCode.UNIMPLEMENTED)
         context.set_details('Method not implemented!')
@@ -68,6 +79,11 @@ def add_GEPAServiceServicer_to_server(servicer, server):
                     servicer.RunOptimization,
                     request_deserializer=gepa__pb2.ClientMessage.FromString,
                     response_serializer=gepa__pb2.ServerMessage.SerializeToString,
+            ),
+            'RunOptimizationOmni': grpc.stream_stream_rpc_method_handler(
+                    servicer.RunOptimizationOmni,
+                    request_deserializer=gepa__pb2.OmniClientMessage.FromString,
+                    response_serializer=gepa__pb2.OmniServerMessage.SerializeToString,
             ),
             'GetStatus': grpc.unary_unary_rpc_method_handler(
                     servicer.GetStatus,
@@ -102,6 +118,33 @@ class GEPAService(object):
             '/gepa_rpc.GEPAService/RunOptimization',
             gepa__pb2.ClientMessage.SerializeToString,
             gepa__pb2.ServerMessage.FromString,
+            options,
+            channel_credentials,
+            insecure,
+            call_credentials,
+            compression,
+            wait_for_ready,
+            timeout,
+            metadata,
+            _registered_method=True)
+
+    @staticmethod
+    def RunOptimizationOmni(request_iterator,
+            target,
+            options=(),
+            channel_credentials=None,
+            call_credentials=None,
+            insecure=False,
+            compression=None,
+            wait_for_ready=None,
+            timeout=None,
+            metadata=None):
+        return grpc.experimental.stream_stream(
+            request_iterator,
+            target,
+            '/gepa_rpc.GEPAService/RunOptimizationOmni',
+            gepa__pb2.OmniClientMessage.SerializeToString,
+            gepa__pb2.OmniServerMessage.FromString,
             options,
             channel_credentials,
             insecure,
