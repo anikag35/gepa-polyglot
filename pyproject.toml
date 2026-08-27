@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "gepa @ git+https://github.com/gepa-ai/gepa.git",
+    "gepa @ git+https://github.com/gepa-ai/gepa.git@2360e7ec87d70d149efe3c677447f16f0b932336",
     "grpcio>=1.78.0",
     "grpcio-tools>=1.78.0",
 ]

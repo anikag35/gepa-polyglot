@@ -59,7 +59,7 @@ _TRAINSET = [
 _SEED = {"instructions": "Answer the question."}
 
 
-def _run_optimize(stub, *, run_id: str, fake_optimize, seed=None, trainset=None):
+def _run_optimize(stub, *, run_id: str, fake_optimize, seed=None, trainset=None, max_metric_calls=20):
     """Drive a full RunOptimization round-trip with a mock optimizer.
 
     The fake_optimize callable receives the same kwargs the servicer passes to
@@ -77,7 +77,7 @@ def _run_optimize(stub, *, run_id: str, fake_optimize, seed=None, trainset=None)
             run_id=run_id,
             seed_candidate=seed,
             trainset=trainset,
-            max_metric_calls=20,
+            max_metric_calls=max_metric_calls,
             reflection_lm="fake",
         )
     ))
@@ -201,7 +201,7 @@ def test_optimize_evaluate_proxied(stub):
 
 
 def test_optimize_error_propagated(stub):
-    """An exception in the optimizer thread becomes an OptimizationError message."""
+    """An exception in the optimizer thread becomes a generic OptimizationError (no leak)."""
     def fake_optimize(**_):
         raise RuntimeError("boom")
 
@@ -209,7 +209,8 @@ def test_optimize_error_propagated(stub):
 
     assert msg is not None
     assert msg.HasField("optimization_error")
-    assert "boom" in msg.optimization_error.message
+    assert "boom" not in msg.optimization_error.message
+    assert msg.optimization_error.message == "optimization failed"
 
 
 def test_get_status_complete(stub):
@@ -276,7 +277,7 @@ def test_optimize_omni_evaluator_proxied(stub):
 
 
 def test_optimize_omni_error_propagated(stub):
-    """An exception in the Omni optimizer thread becomes an OptimizationError message."""
+    """An exception in the Omni optimizer thread becomes a generic OptimizationError (no leak)."""
     def fake_optimize_anything(**_):
         raise ValueError("omni boom")
 
@@ -284,4 +285,126 @@ def test_optimize_omni_error_propagated(stub):
 
     assert msg is not None
     assert msg.HasField("optimization_error")
-    assert "omni boom" in msg.optimization_error.message
+    assert "omni boom" not in msg.optimization_error.message
+    assert msg.optimization_error.message == "optimization failed"
+
+
+# ------------------------------------------------------------------ edge case tests
+
+
+def test_invalid_run_id_rejected(stub):
+    """run_id with path traversal characters is rejected with INVALID_ARGUMENT."""
+    import grpc as grpc_module
+
+    def fake_optimize(**_):
+        return SimpleNamespace(candidates=[{}], best_idx=0, val_aggregate_scores=[0.0])
+
+    req_q: queue.Queue = queue.Queue()
+    req_q.put(pb.ClientMessage(
+        start_request=pb.StartRequest(
+            run_id="../../../etc/passwd",
+            seed_candidate=_SEED,
+            trainset=_TRAINSET,
+            max_metric_calls=5,
+        )
+    ))
+
+    def gen():
+        while True:
+            msg = req_q.get()
+            if msg is None:
+                return
+            yield msg
+
+    with patch("gepa_rpc.servicer.gepa.optimize", side_effect=fake_optimize):
+        call = stub.RunOptimization(gen())
+        try:
+            list(call)
+            req_q.put(None)
+            pytest.fail("expected RpcError")
+        except grpc_module.RpcError as e:
+            req_q.put(None)
+            assert e.code() == grpc_module.StatusCode.INVALID_ARGUMENT
+
+
+def test_optimize_empty_trainset(stub):
+    """RunOptimization with an empty trainset completes without error."""
+    def fake_optimize(**_):
+        return SimpleNamespace(candidates=[{"instructions": "x"}], best_idx=0, val_aggregate_scores=[0.0])
+
+    msg = _run_optimize(stub, run_id="opt-empty", fake_optimize=fake_optimize, trainset=[])
+    assert msg is not None
+    assert msg.HasField("optimization_complete")
+
+
+def test_optimize_omni_no_seed(stub):
+    """RunOptimizationOmni with no seed_candidate (empty string) completes."""
+    from gepa.oa.engine import Result
+
+    def fake_optimize_anything(*, seed_candidate, **_):
+        return Result(best_candidate="generated", best_score=0.5, total_evals=2)
+
+    req_q: queue.Queue = queue.Queue()
+    req_q.put(pb.OmniClientMessage(
+        start_request=pb.OmniStartRequest(
+            run_id="omni-noseed",
+            seed_candidate="",
+            max_evals=5,
+            reflection_lm="fake",
+        )
+    ))
+
+    def gen():
+        while True:
+            msg = req_q.get()
+            if msg is None:
+                return
+            yield msg
+
+    final = None
+    with patch("gepa_rpc.servicer.optimize_anything", side_effect=fake_optimize_anything):
+        call = stub.RunOptimizationOmni(gen())
+        for msg in call:
+            if msg.HasField("optimization_complete") or msg.HasField("optimization_error"):
+                final = msg
+                req_q.put(None)
+                break
+
+    assert final is not None
+    assert final.HasField("optimization_complete")
+    assert final.optimization_complete.best_candidate == "generated"
+
+
+def test_optimize_omni_invalid_run_id_rejected(stub):
+    """Omni run_id with path traversal is rejected."""
+    import grpc as grpc_module
+
+    req_q: queue.Queue = queue.Queue()
+    req_q.put(pb.OmniClientMessage(
+        start_request=pb.OmniStartRequest(
+            run_id="../../bad",
+            seed_candidate="test",
+            max_evals=5,
+        )
+    ))
+
+    def gen():
+        while True:
+            msg = req_q.get()
+            if msg is None:
+                return
+            yield msg
+
+    def fake(**_):
+        from gepa.oa.engine import Result
+        return Result(best_candidate="x", best_score=1.0, total_evals=1)
+
+    with patch("gepa_rpc.servicer.optimize_anything", side_effect=fake):
+        call = stub.RunOptimizationOmni(gen())
+        try:
+            list(call)
+            req_q.put(None)
+            pytest.fail("expected RpcError")
+        except grpc_module.RpcError as e:
+            req_q.put(None)
+            assert e.code() == grpc_module.StatusCode.INVALID_ARGUMENT

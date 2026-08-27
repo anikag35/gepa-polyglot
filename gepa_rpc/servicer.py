@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import logging
 import os
+import pathlib
 import queue
+import re
 import threading
 from typing import Any
 
@@ -32,6 +34,24 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_REFLECTION_LM = "openai/gpt-5.1"
 DEFAULT_RUNS_DIR = os.environ.get("GEPA_RPC_RUNS_DIR", "./runs")
+
+_RUN_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,128}$")
+
+
+def _validate_run_id(run_id: str, context: grpc.ServicerContext) -> bool:
+    """Return True if run_id is safe; otherwise set gRPC error and return False."""
+    if not _RUN_ID_RE.match(run_id):
+        context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+        context.set_details("run_id must be 1-128 alphanumeric/hyphen/underscore characters")
+        return False
+    # Guard against path traversal even if the regex were somehow bypassed.
+    runs_root = pathlib.Path(DEFAULT_RUNS_DIR).resolve()
+    candidate = (runs_root / run_id).resolve()
+    if not str(candidate).startswith(str(runs_root)):
+        context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
+        context.set_details("invalid run_id")
+        return False
+    return True
 
 
 class _ProgressCallback:
@@ -154,6 +174,8 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
 
         start_req = first.start_request
         run_id = start_req.run_id or "unnamed"
+        if not _validate_run_id(run_id, context):
+            return
         run_dir = os.path.join(self._runs_dir, run_id)
 
         run_status: dict[str, Any] = {
@@ -223,7 +245,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                 run_status["message"] = str(e)
                 outbound.put(
                     pb.ServerMessage(
-                        optimization_error=pb.OptimizationError(run_id=run_id, message=str(e))
+                        optimization_error=pb.OptimizationError(run_id=run_id, message="optimization failed")
                     )
                 )
             finally:
@@ -255,6 +277,8 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
 
         start_req = first.start_request
         run_id = start_req.run_id or "unnamed"
+        if not _validate_run_id(run_id, context):
+            return
         run_dir = os.path.join(self._runs_dir, run_id)
 
         run_status: dict[str, Any] = {"status": "running", "metric_calls_used": 0, "message": ""}
@@ -326,7 +350,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                 run_status["status"] = "failed"
                 run_status["message"] = str(e)
                 outbound.put(pb.OmniServerMessage(
-                    optimization_error=pb.OptimizationError(run_id=run_id, message=str(e))
+                    optimization_error=pb.OptimizationError(run_id=run_id, message="optimization failed")
                 ))
             finally:
                 outbound.put(None)
