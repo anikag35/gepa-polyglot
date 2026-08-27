@@ -220,7 +220,8 @@ class OmniRemoteEvaluator:
                     f"client returned {len(resp.scores)} scores for batch of {len(examples)}"
                 )
 
-            for i, (score, side_info_json) in enumerate(zip(resp.scores, resp.side_infos)):
+            for i, score in enumerate(resp.scores):
+                side_info_json = resp.side_infos[i] if i < len(resp.side_infos) else ""
                 try:
                     side_info = json.loads(side_info_json) if side_info_json else {}
                 except json.JSONDecodeError:

@@ -39,14 +39,14 @@ DEFAULT_RUNS_DIR = os.environ.get("GEPA_RPC_RUNS_DIR", "./runs")
 _RUN_ID_RE = re.compile(r"^[A-Za-z0-9_\-]{1,128}$")
 
 
-def _validate_run_id(run_id: str, context: grpc.ServicerContext) -> bool:
+def _validate_run_id(run_id: str, runs_dir: str, context: grpc.ServicerContext) -> bool:
     """Return True if run_id is safe; otherwise set gRPC error and return False."""
     if not _RUN_ID_RE.match(run_id):
         context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
         context.set_details("run_id must be 1-128 alphanumeric/hyphen/underscore characters")
         return False
     # Guard against path traversal even if the regex were somehow bypassed.
-    runs_root = pathlib.Path(DEFAULT_RUNS_DIR).resolve()
+    runs_root = pathlib.Path(runs_dir).resolve()
     candidate = (runs_root / run_id).resolve()
     if not str(candidate).startswith(str(runs_root)):
         context.set_code(grpc.StatusCode.INVALID_ARGUMENT)
@@ -75,7 +75,8 @@ class _ProgressCallback:
         used = int(event["metric_calls_used"])
         self._evals_used = used
         self._run_status["metric_calls_used"] = used
-        self._emit(used)
+        if self._best_score != float("-inf"):
+            self._emit(used)
 
     def on_valset_evaluated(self, event: dict[str, Any]) -> None:
         avg = float(event["average_score"])
@@ -114,7 +115,8 @@ class _OmniProgressCallback:
         used = int(event["metric_calls_used"])
         self._evals_used = used
         self._run_status["metric_calls_used"] = used
-        self._emit(used)
+        if self._best_score != float("-inf"):
+            self._emit(used)
 
     def on_valset_evaluated(self, event: dict[str, Any]) -> None:
         avg = float(event["average_score"])
@@ -139,11 +141,24 @@ class _OmniProgressCallback:
         self._outbound.put(pb.OmniServerMessage(progress_update=update))
 
 
+_MAX_RUNS = 1000
+
+
 class GEPAServicer(pb_grpc.GEPAServiceServicer):
     def __init__(self, runs_dir: str = DEFAULT_RUNS_DIR):
         self._runs_dir = runs_dir
         self._runs: dict[str, dict[str, Any]] = {}
         self._runs_lock = threading.Lock()
+
+    def _register_run(self, run_id: str, run_status: dict[str, Any]) -> None:
+        with self._runs_lock:
+            if len(self._runs) >= _MAX_RUNS:
+                # Evict oldest completed/failed run to keep memory bounded.
+                for key, entry in self._runs.items():
+                    if entry.get("status") in ("complete", "failed"):
+                        del self._runs[key]
+                        break
+            self._runs[run_id] = run_status
 
     # ------------------------------------------------------------------ status
     def GetStatus(self, request: pb.StatusRequest, context: grpc.ServicerContext) -> pb.StatusResponse:
@@ -179,7 +194,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
 
         start_req = first.start_request
         run_id = start_req.run_id or uuid.uuid4().hex
-        if not _validate_run_id(run_id, context):
+        if not _validate_run_id(run_id, self._runs_dir, context):
             return
         run_dir = os.path.join(self._runs_dir, run_id)
 
@@ -188,8 +203,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
             "metric_calls_used": 0,
             "message": "",
         }
-        with self._runs_lock:
-            self._runs[run_id] = run_status
+        self._register_run(run_id, run_status)
 
         outbound: "queue.Queue[pb.ServerMessage | None]" = queue.Queue()
         adapter = RemoteAdapter(outbound)
@@ -282,13 +296,12 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
 
         start_req = first.start_request
         run_id = start_req.run_id or uuid.uuid4().hex
-        if not _validate_run_id(run_id, context):
+        if not _validate_run_id(run_id, self._runs_dir, context):
             return
         run_dir = os.path.join(self._runs_dir, run_id)
 
         run_status: dict[str, Any] = {"status": "running", "metric_calls_used": 0, "message": ""}
-        with self._runs_lock:
-            self._runs[run_id] = run_status
+        self._register_run(run_id, run_status)
 
         outbound: "queue.Queue[pb.OmniServerMessage | None]" = queue.Queue()
         evaluator = OmniRemoteEvaluator(outbound)
