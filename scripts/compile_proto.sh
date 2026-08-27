@@ -19,6 +19,10 @@ if [[ ! -f "${OUT_DIR}/gepa_pb2_grpc.py" ]]; then
 fi
 sed -i.bak 's/^import gepa_pb2 as gepa__pb2$/from gepa_rpc.generated import gepa_pb2 as gepa__pb2/' "${OUT_DIR}/gepa_pb2_grpc.py"
 rm -f "${OUT_DIR}/gepa_pb2_grpc.py.bak"
+cp "${PROTO_FILE}" ./sdk/typescript/proto/gepa.proto
+cp "${PROTO_FILE}" ./sdk/rust/proto/gepa.proto
 echo "Proto compilation succeeded. Generated files:"
 echo "  - ${OUT_DIR}/gepa_pb2.py"
 echo "  - ${OUT_DIR}/gepa_pb2_grpc.py"
+echo "  - sdk/typescript/proto/gepa.proto (synced)"
+echo "  - sdk/rust/proto/gepa.proto (synced)"
