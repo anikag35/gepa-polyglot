@@ -36,7 +36,9 @@ def build_server(
         options=_KEEPALIVE_OPTIONS,
     )
     pb_grpc.add_GEPAServiceServicer_to_server(GEPAServicer(runs_dir=runs_dir), server)
-    server.add_insecure_port(f"[::]:{port}")
+    bound = server.add_insecure_port(f"[::]:{port}")
+    if bound == 0:
+        raise RuntimeError(f"failed to bind gRPC server to port {port} (port may already be in use)")
     return server
 
 
