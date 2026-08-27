@@ -75,7 +75,11 @@ export class Client {
           ).catch((err) => settle(() => reject(err)));
         } else if (msg.progress_update) {
           if (opts.onProgress) {
-            opts.onProgress(toProgressUpdate(msg.progress_update));
+            try {
+              opts.onProgress(toProgressUpdate(msg.progress_update));
+            } catch (err) {
+              settle(() => reject(err));
+            }
           }
         } else if (msg.optimization_complete) {
           const c = msg.optimization_complete;
@@ -151,7 +155,11 @@ export class Client {
             .catch((err) => settle(() => reject(err)));
         } else if (msg.progress_update) {
           if (opts.onProgress) {
-            opts.onProgress(toOmniProgressUpdate(msg.progress_update));
+            try {
+              opts.onProgress(toOmniProgressUpdate(msg.progress_update));
+            } catch (err) {
+              settle(() => reject(err));
+            }
           }
         } else if (msg.optimization_complete) {
           const c = msg.optimization_complete;

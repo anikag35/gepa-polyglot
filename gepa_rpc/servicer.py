@@ -150,22 +150,34 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
         self._runs: dict[str, dict[str, Any]] = {}
         self._runs_lock = threading.Lock()
 
-    def _register_run(self, run_id: str, run_status: dict[str, Any]) -> None:
+    def _register_run(
+        self, run_id: str, run_status: dict[str, Any], context: grpc.ServicerContext
+    ) -> bool:
         with self._runs_lock:
+            existing = self._runs.get(run_id)
+            if existing is not None and existing.get("status") == "running":
+                context.set_code(grpc.StatusCode.ALREADY_EXISTS)
+                context.set_details(f"run {run_id!r} is already active")
+                return False
             if len(self._runs) >= _MAX_RUNS:
-                # Evict oldest completed/failed run to keep memory bounded.
-                for key, entry in self._runs.items():
-                    if entry.get("status") in ("complete", "failed"):
-                        del self._runs[key]
-                        break
+                # Prefer evicting a finished run; fall back to the oldest entry.
+                evict_key = next(
+                    (k for k, e in self._runs.items() if e.get("status") in ("complete", "failed")),
+                    next(iter(self._runs)),
+                )
+                del self._runs[evict_key]
             self._runs[run_id] = run_status
+            return True
 
     # ------------------------------------------------------------------ status
     def GetStatus(self, request: pb.StatusRequest, context: grpc.ServicerContext) -> pb.StatusResponse:
         with self._runs_lock:
             entry = self._runs.get(request.run_id)
-        if entry is None:
-            return pb.StatusResponse(run_id=request.run_id, status=pb.StatusResponse.UNKNOWN)
+            if entry is None:
+                return pb.StatusResponse(run_id=request.run_id, status=pb.StatusResponse.UNKNOWN)
+            status_str = entry.get("status", "")
+            message = entry.get("message", "")
+            metric_calls_used = entry.get("metric_calls_used", 0)
         status_map = {
             "running": pb.StatusResponse.RUNNING,
             "complete": pb.StatusResponse.COMPLETE,
@@ -173,9 +185,9 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
         }
         return pb.StatusResponse(
             run_id=request.run_id,
-            status=status_map.get(entry["status"], pb.StatusResponse.UNKNOWN),
-            message=entry.get("message", ""),
-            metric_calls_used=entry.get("metric_calls_used", 0),
+            status=status_map.get(status_str, pb.StatusResponse.UNKNOWN),
+            message=message,
+            metric_calls_used=metric_calls_used,
         )
 
     # ----------------------------------------------------------- optimization
@@ -203,7 +215,8 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
             "metric_calls_used": 0,
             "message": "",
         }
-        self._register_run(run_id, run_status)
+        if not self._register_run(run_id, run_status, context):
+            return
 
         outbound: "queue.Queue[pb.ServerMessage | None]" = queue.Queue()
         adapter = RemoteAdapter(outbound)
@@ -248,6 +261,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                 best_idx = result.best_idx
                 best_candidate = result.candidates[best_idx]
                 best_score = result.val_aggregate_scores[best_idx]
+                run_status["status"] = "complete"
                 outbound.put(
                     pb.ServerMessage(
                         optimization_complete=pb.OptimizationComplete(
@@ -257,7 +271,6 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                         )
                     )
                 )
-                run_status["status"] = "complete"
             except Exception as e:
                 logger.exception("optimization run %s failed", run_id)
                 run_status["status"] = "failed"
@@ -301,7 +314,8 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
         run_dir = os.path.join(self._runs_dir, run_id)
 
         run_status: dict[str, Any] = {"status": "running", "metric_calls_used": 0, "message": ""}
-        self._register_run(run_id, run_status)
+        if not self._register_run(run_id, run_status, context):
+            return
 
         outbound: "queue.Queue[pb.OmniServerMessage | None]" = queue.Queue()
         evaluator = OmniRemoteEvaluator(outbound)
