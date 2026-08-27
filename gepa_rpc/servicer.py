@@ -18,6 +18,7 @@ import pathlib
 import queue
 import re
 import threading
+import uuid
 from typing import Any
 
 import grpc
@@ -68,9 +69,11 @@ class _ProgressCallback:
         self._run_status = run_status
         self._best_score = float("-inf")
         self._best_candidate: dict[str, str] = {}
+        self._evals_used = 0
 
     def on_budget_updated(self, event: dict[str, Any]) -> None:
         used = int(event["metric_calls_used"])
+        self._evals_used = used
         self._run_status["metric_calls_used"] = used
         self._emit(used)
 
@@ -79,7 +82,7 @@ class _ProgressCallback:
         if avg > self._best_score:
             self._best_score = avg
             self._best_candidate = dict(event["candidate"])
-            self._emit(self._run_status.get("metric_calls_used", 0))
+            self._emit(self._evals_used)
 
     def _emit(self, metric_calls_used: int) -> None:
         update = pb.ProgressUpdate(
@@ -105,9 +108,11 @@ class _OmniProgressCallback:
         self._run_status = run_status
         self._best_score = float("-inf")
         self._best_candidate = ""
+        self._evals_used = 0
 
     def on_budget_updated(self, event: dict[str, Any]) -> None:
         used = int(event["metric_calls_used"])
+        self._evals_used = used
         self._run_status["metric_calls_used"] = used
         self._emit(used)
 
@@ -122,7 +127,7 @@ class _OmniProgressCallback:
                 self._best_candidate = next(iter(candidate.values()), "") if len(candidate) == 1 else str(candidate)
             else:
                 self._best_candidate = str(candidate)
-            self._emit(self._run_status.get("metric_calls_used", 0))
+            self._emit(self._evals_used)
 
     def _emit(self, evals_used: int) -> None:
         update = pb.OmniProgressUpdate(
@@ -173,7 +178,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
             return
 
         start_req = first.start_request
-        run_id = start_req.run_id or "unnamed"
+        run_id = start_req.run_id or uuid.uuid4().hex
         if not _validate_run_id(run_id, context):
             return
         run_dir = os.path.join(self._runs_dir, run_id)
@@ -276,7 +281,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
             return
 
         start_req = first.start_request
-        run_id = start_req.run_id or "unnamed"
+        run_id = start_req.run_id or uuid.uuid4().hex
         if not _validate_run_id(run_id, context):
             return
         run_dir = os.path.join(self._runs_dir, run_id)

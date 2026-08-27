@@ -1,4 +1,4 @@
-"""RemoteAdapter is1 a GEPAAdapter whose evaluate/make_reflective_dataset calls
+"""RemoteAdapter is a GEPAAdapter whose evaluate/make_reflective_dataset calls
 are proxied across a gRPC stream to a connected client.
 
 The adapter is owned by the server-side RunOptimization handler. It places
@@ -199,7 +199,7 @@ class OmniRemoteEvaluator:
         for idx, (candidate, example) in enumerate(pairs):
             groups[str(candidate)].append((idx, example))
 
-        results: list[tuple[float, dict[str, Any]]] = [(0.0, {})] * len(pairs)
+        results: list[tuple[float, dict[str, Any]]] = [(0.0, {}) for _ in range(len(pairs))]
 
         for candidate_str, indexed_examples in groups.items():
             indices = [i for i, _ in indexed_examples]
