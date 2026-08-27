@@ -274,7 +274,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
             except Exception as e:
                 logger.exception("optimization run %s failed", run_id)
                 run_status["status"] = "failed"
-                run_status["message"] = str(e)
+                run_status["message"] = "optimization failed"
                 outbound.put(
                     pb.ServerMessage(
                         optimization_error=pb.OptimizationError(run_id=run_id, message="optimization failed")
@@ -380,7 +380,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
             except Exception as e:
                 logger.exception("omni optimization run %s failed", run_id)
                 run_status["status"] = "failed"
-                run_status["message"] = str(e)
+                run_status["message"] = "optimization failed"
                 outbound.put(pb.OmniServerMessage(
                     optimization_error=pb.OptimizationError(run_id=run_id, message="optimization failed")
                 ))

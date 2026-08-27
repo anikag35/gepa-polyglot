@@ -29,8 +29,6 @@ def build_server(
 
 def serve(port: int, runs_dir: str = DEFAULT_RUNS_DIR, max_workers: int = 16) -> None:
     server = build_server(port=port, runs_dir=runs_dir, max_workers=max_workers)
-    server.start()
-    logger.info("gepa-rpc listening on :%d (runs_dir=%s)", port, runs_dir)
 
     def _shutdown(signum, frame):
         logger.info("received signal %d, stopping server (grace=%ds)", signum, _GRACEFUL_SHUTDOWN_SECONDS)
@@ -39,4 +37,6 @@ def serve(port: int, runs_dir: str = DEFAULT_RUNS_DIR, max_workers: int = 16) ->
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
+    server.start()
+    logger.info("gepa-rpc listening on :%d (runs_dir=%s)", port, runs_dir)
     server.wait_for_termination()

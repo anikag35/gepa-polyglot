@@ -9,7 +9,7 @@ COPY gepa_rpc/ ./gepa_rpc/
 
 RUN pip install --no-cache-dir .
 
-RUN useradd --no-create-home --shell /bin/false appuser
+RUN useradd --no-create-home --shell /bin/false appuser && chown appuser /app
 USER appuser
 
 EXPOSE 50051

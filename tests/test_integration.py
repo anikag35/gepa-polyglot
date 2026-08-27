@@ -68,8 +68,8 @@ def _run_optimize(stub, *, run_id: str, fake_optimize, seed=None, trainset=None,
     The test client automatically responds to EvaluateBatchRequest messages
     with score=1.0 for every example.
     """
-    seed = seed or _SEED
-    trainset = trainset or _TRAINSET
+    seed = seed if seed is not None else _SEED
+    trainset = trainset if trainset is not None else _TRAINSET
 
     req_q: queue.Queue = queue.Queue()
     req_q.put(pb.ClientMessage(
