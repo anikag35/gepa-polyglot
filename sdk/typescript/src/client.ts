@@ -313,7 +313,9 @@ function mapToObject(m: any): Record<string, string> {
     for (const [k, v] of m) o[k] = String(v);
     return o;
   }
-  return { ...m };
+  const o: Record<string, string> = {};
+  for (const k of Object.keys(m)) o[k] = String(m[k]);
+  return o;
 }
 
 function toProgressUpdate(p: any): ProgressUpdate {

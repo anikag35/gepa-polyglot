@@ -75,7 +75,7 @@ pub struct OptimizeOpts<E, M> {
     pub seed_candidate: HashMap<String, String>,
     pub trainset: Vec<Example>,
     pub valset: Option<Vec<Example>>,
-    pub max_metric_calls: u32,
+    pub max_metric_calls: i32,
     pub evaluate: E,
     pub make_reflective_dataset: M,
     pub on_progress: Option<Box<dyn Fn(ProgressUpdate) + Send>>,

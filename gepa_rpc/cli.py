@@ -23,10 +23,7 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
     )
 
-    try:
-        serve(port=args.port, runs_dir=args.runs_dir, max_workers=args.max_workers)
-    except KeyboardInterrupt:
-        return 0
+    serve(port=args.port, runs_dir=args.runs_dir, max_workers=args.max_workers)
     return 0
 
 

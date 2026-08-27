@@ -2,9 +2,8 @@ name: Publish gepa-sdk to crates.io
 
 on:
   push:
-    branches: [main]
-    paths:
-      - 'sdk/rust/**'
+    tags:
+      - 'sdk-rust-v*'
 
 jobs:
   publish:

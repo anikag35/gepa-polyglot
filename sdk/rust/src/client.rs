@@ -61,7 +61,7 @@ impl Client {
                     .map(example_to_proto)
                     .collect(),
                 reflection_lm: String::new(),
-                max_metric_calls: opts.max_metric_calls as i32,
+                max_metric_calls: opts.max_metric_calls,
             })),
         })
         .await
