@@ -16,12 +16,25 @@ logger = logging.getLogger(__name__)
 _GRACEFUL_SHUTDOWN_SECONDS = 30
 
 
+_KEEPALIVE_OPTIONS = [
+    # Send a ping every 60 s of idle to detect silently dropped TCP connections.
+    ("grpc.keepalive_time_ms", 60_000),
+    # Close the connection if the peer doesn't respond within 10 s.
+    ("grpc.keepalive_timeout_ms", 10_000),
+    # Allow keepalive pings even when there are no active RPCs.
+    ("grpc.keepalive_permit_without_calls", True),
+]
+
+
 def build_server(
     port: int,
     runs_dir: str = DEFAULT_RUNS_DIR,
     max_workers: int = 16,
 ) -> grpc.Server:
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=max_workers))
+    server = grpc.server(
+        futures.ThreadPoolExecutor(max_workers=max_workers),
+        options=_KEEPALIVE_OPTIONS,
+    )
     pb_grpc.add_GEPAServiceServicer_to_server(GEPAServicer(runs_dir=runs_dir), server)
     server.add_insecure_port(f"[::]:{port}")
     return server
