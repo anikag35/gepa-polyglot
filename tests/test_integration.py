@@ -112,10 +112,11 @@ def _run_optimize(stub, *, run_id: str, fake_optimize, seed=None, trainset=None,
 
 def _run_optimize_omni(stub, *, run_id: str, fake_optimize_anything, dataset=None):
     """Drive a full RunOptimizationOmni round-trip with a mock optimizer."""
-    dataset = dataset or [
-        pb.Example(id="1", fields={"x": "hello"}),
-        pb.Example(id="2", fields={"x": "world"}),
-    ]
+    if dataset is None:
+        dataset = [
+            pb.Example(id="1", fields={"x": "hello"}),
+            pb.Example(id="2", fields={"x": "world"}),
+        ]
 
     req_q: queue.Queue = queue.Queue()
     req_q.put(pb.OmniClientMessage(
@@ -408,3 +409,73 @@ def test_optimize_omni_invalid_run_id_rejected(stub):
         except grpc_module.RpcError as e:
             req_q.put(None)
             assert e.code() == grpc_module.StatusCode.INVALID_ARGUMENT
+
+
+def test_get_status_failed(stub):
+    """GetStatus for a failed run returns FAILED with sanitized message."""
+    def fake_optimize(**_):
+        raise RuntimeError("internal details that must not leak")
+
+    run_id = "status-fail"
+    _run_optimize(stub, run_id=run_id, fake_optimize=fake_optimize)
+
+    resp = stub.GetStatus(pb.StatusRequest(run_id=run_id))
+    assert resp.status == pb.StatusResponse.FAILED
+    assert "internal details" not in resp.message
+    assert resp.message == "optimization failed"
+
+
+def test_duplicate_run_id_rejected(stub):
+    """Submitting the same run_id while a run is active returns ALREADY_EXISTS."""
+    import grpc as grpc_module
+    import threading
+
+    started = threading.Event()
+    released = threading.Event()
+
+    def fake_optimize(**_):
+        started.set()
+        released.wait(timeout=5)
+        return SimpleNamespace(candidates=[{}], best_idx=0, val_aggregate_scores=[0.0])
+
+    # Start first run in background.
+    first_result: list = []
+
+    def run_first():
+        msg = _run_optimize(stub, run_id="dup-run", fake_optimize=fake_optimize)
+        first_result.append(msg)
+
+    t = threading.Thread(target=run_first)
+    t.start()
+    started.wait(timeout=5)
+
+    # Second run with the same run_id while first is still active.
+    req_q: queue.Queue = queue.Queue()
+    req_q.put(pb.ClientMessage(
+        start_request=pb.StartRequest(
+            run_id="dup-run",
+            seed_candidate=_SEED,
+            trainset=_TRAINSET,
+            max_metric_calls=5,
+        )
+    ))
+
+    def gen():
+        while True:
+            msg = req_q.get()
+            if msg is None:
+                return
+            yield msg
+
+    with patch("gepa_rpc.servicer.gepa.optimize", side_effect=fake_optimize):
+        call = stub.RunOptimization(gen())
+        try:
+            list(call)
+            req_q.put(None)
+            pytest.fail("expected RpcError")
+        except grpc_module.RpcError as e:
+            req_q.put(None)
+            assert e.code() == grpc_module.StatusCode.ALREADY_EXISTS
+
+    released.set()
+    t.join(timeout=5)

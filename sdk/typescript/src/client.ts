@@ -231,7 +231,7 @@ export class Client {
       evaluate_batch_response: {
         request_id: args.requestId,
         scores: result.scores,
-        side_infos: (result.sideInfos ?? []).map((s) => JSON.stringify(s)),
+        side_infos: (result.sideInfos ?? []).map((s) => s !== undefined ? JSON.stringify(s) : "null"),
       },
     });
   }
