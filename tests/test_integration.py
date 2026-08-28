@@ -7,6 +7,7 @@ are made — the tests verify the gRPC wire protocol and adapter pipeline only.
 
 from __future__ import annotations
 
+import json
 import queue
 import socket
 from concurrent import futures
@@ -110,7 +111,7 @@ def _run_optimize(stub, *, run_id: str, fake_optimize, seed=None, trainset=None,
     return final
 
 
-def _run_optimize_omni(stub, *, run_id: str, fake_optimize_anything, dataset=None):
+def _run_optimize_omni(stub, *, run_id: str, fake_optimize_anything, dataset=None, engine=None):
     """Drive a full RunOptimizationOmni round-trip with a mock optimizer."""
     if dataset is None:
         dataset = [
@@ -126,6 +127,7 @@ def _run_optimize_omni(stub, *, run_id: str, fake_optimize_anything, dataset=Non
             dataset=dataset,
             max_evals=10,
             reflection_lm="fake",
+            engine=engine or "",
         )
     ))
 
@@ -275,6 +277,161 @@ def test_optimize_omni_evaluator_proxied(stub):
     scores = [r[0] for r in received[0]]
     # proto float is 32-bit; compare with tolerance
     assert scores == pytest.approx([0.8, 0.8], rel=1e-5)
+
+
+def test_optimize_omni_default_engine_uses_gepa_config(stub):
+    """No engine set → config.engine == 'gepa' and reflection/callbacks are wired."""
+    from gepa.oa.engine import Result
+
+    received_configs: list = []
+
+    def fake_optimize_anything(*, seed_candidate, config, **_):
+        received_configs.append(config)
+        return Result(best_candidate=seed_candidate or "", best_score=1.0, total_evals=1)
+
+    _run_optimize_omni(stub, run_id="omni-engine-default", fake_optimize_anything=fake_optimize_anything)
+
+    assert len(received_configs) == 1
+    config = received_configs[0]
+    assert config.engine == "gepa"
+    assert "reflection" in config.engine_config
+    assert "callbacks" in config.engine_config
+
+
+def test_optimize_omni_explicit_engine_skips_gepa_config(stub):
+    """A non-gepa engine gets an empty engine_config (avoids TypeError from mismatched fields)."""
+    from gepa.oa.engine import Result
+
+    received_configs: list = []
+
+    def fake_optimize_anything(*, seed_candidate, config, **_):
+        received_configs.append(config)
+        return Result(best_candidate=seed_candidate or "", best_score=1.0, total_evals=1)
+
+    _run_optimize_omni(
+        stub, run_id="omni-engine-best-of-n", fake_optimize_anything=fake_optimize_anything, engine="best_of_n"
+    )
+
+    assert len(received_configs) == 1
+    config = received_configs[0]
+    assert config.engine == "best_of_n"
+    assert config.engine_config == {}
+
+
+def test_optimize_omni_opt_states_proxied(stub):
+    """opt_states passed to batch_evaluator are forwarded on OmniEvaluateBatchRequest."""
+    from gepa.oa.engine import Result
+
+    dataset = [
+        pb.Example(id="1", fields={"x": "hello"}),
+        pb.Example(id="2", fields={"x": "world"}),
+    ]
+    opt_states = [
+        SimpleNamespace(best_example_evals=[{"score": 0.9, "side_info": {"note": "prior best 1"}}]),
+        SimpleNamespace(best_example_evals=[]),
+    ]
+
+    def fake_optimize_anything(*, seed_candidate, batch_evaluator, dataset, **_):
+        pairs = [(seed_candidate, ex) for ex in dataset[:2]]
+        results = batch_evaluator(pairs, opt_states=opt_states)
+        best_score = max(r[0] for r in results) if results else 0.0
+        return Result(best_candidate=seed_candidate or "", best_score=best_score, total_evals=len(pairs))
+
+    req_q: queue.Queue = queue.Queue()
+    req_q.put(pb.OmniClientMessage(
+        start_request=pb.OmniStartRequest(
+            run_id="omni-opt-states",
+            seed_candidate="Classify the input.",
+            dataset=dataset,
+            max_evals=10,
+            reflection_lm="fake",
+        )
+    ))
+
+    def gen():
+        while True:
+            msg = req_q.get()
+            if msg is None:
+                return
+            yield msg
+
+    received_requests: list = []
+    with patch("gepa_rpc.servicer.optimize_anything", side_effect=fake_optimize_anything):
+        call = stub.RunOptimizationOmni(gen())
+        for msg in call:
+            if msg.HasField("evaluate_batch_request"):
+                req = msg.evaluate_batch_request
+                received_requests.append(req)
+                req_q.put(pb.OmniClientMessage(
+                    evaluate_batch_response=pb.OmniEvaluateBatchResponse(
+                        request_id=req.request_id,
+                        scores=[0.5] * len(req.batch),
+                        side_infos=["{}"] * len(req.batch),
+                    )
+                ))
+            elif msg.HasField("optimization_complete") or msg.HasField("optimization_error"):
+                req_q.put(None)
+                break
+
+    assert len(received_requests) == 1
+    req = received_requests[0]
+    assert len(req.opt_states) == 2
+    assert len(req.opt_states[0].best_example_evals) == 1
+    assert req.opt_states[0].best_example_evals[0].score == pytest.approx(0.9)
+    assert json.loads(req.opt_states[0].best_example_evals[0].side_info) == {"note": "prior best 1"}
+    assert len(req.opt_states[1].best_example_evals) == 0
+
+
+def test_optimize_omni_opt_states_omitted_backward_compat(stub):
+    """When batch_evaluator is called without opt_states, the request field stays empty."""
+    from gepa.oa.engine import Result
+
+    def fake_optimize_anything(*, seed_candidate, batch_evaluator, dataset, **_):
+        pairs = [(seed_candidate, ex) for ex in (dataset or [])[:1]]
+        results = batch_evaluator(pairs)
+        best_score = max(r[0] for r in results) if results else 0.0
+        return Result(best_candidate=seed_candidate or "", best_score=best_score, total_evals=len(pairs))
+
+    received_requests: list = []
+    dataset = [pb.Example(id="1", fields={"x": "hello"})]
+
+    req_q: queue.Queue = queue.Queue()
+    req_q.put(pb.OmniClientMessage(
+        start_request=pb.OmniStartRequest(
+            run_id="omni-opt-states-none",
+            seed_candidate="Classify the input.",
+            dataset=dataset,
+            max_evals=10,
+            reflection_lm="fake",
+        )
+    ))
+
+    def gen():
+        while True:
+            msg = req_q.get()
+            if msg is None:
+                return
+            yield msg
+
+    with patch("gepa_rpc.servicer.optimize_anything", side_effect=fake_optimize_anything):
+        call = stub.RunOptimizationOmni(gen())
+        for msg in call:
+            if msg.HasField("evaluate_batch_request"):
+                req = msg.evaluate_batch_request
+                received_requests.append(req)
+                req_q.put(pb.OmniClientMessage(
+                    evaluate_batch_response=pb.OmniEvaluateBatchResponse(
+                        request_id=req.request_id,
+                        scores=[0.5] * len(req.batch),
+                        side_infos=["{}"] * len(req.batch),
+                    )
+                ))
+            elif msg.HasField("optimization_complete") or msg.HasField("optimization_error"):
+                req_q.put(None)
+                break
+
+    assert len(received_requests) == 1
+    assert len(received_requests[0].opt_states) == 0
 
 
 def test_optimize_omni_error_propagated(stub):
@@ -479,3 +636,122 @@ def test_duplicate_run_id_rejected(stub):
 
     released.set()
     t.join(timeout=5)
+
+
+def test_optimize_omni_dict_best_candidate(stub):
+    """When optimize_anything returns a dict best_candidate it is unwrapped to str."""
+    class _FakeResult:
+        @property
+        def best_candidate(self):
+            return {"__seed__": "optimized prompt text"}
+
+        @property
+        def best_score(self):
+            return 0.7
+
+        @property
+        def total_evals(self):
+            return 3
+
+    def fake_optimize_anything(**_):
+        return _FakeResult()
+
+    msg = _run_optimize_omni(stub, run_id="omni-dict", fake_optimize_anything=fake_optimize_anything)
+
+    assert msg is not None
+    assert msg.HasField("optimization_complete")
+    c = msg.optimization_complete
+    # Single-key dict {"__seed__": "optimized prompt text"} should unwrap to its value.
+    assert c.best_candidate == "optimized prompt text"
+    assert c.best_score == pytest.approx(0.7)
+    assert c.total_evals == 3
+
+
+def test_optimize_reflective_dataset_proxied(stub):
+    """make_reflective_dataset sends ReflectiveDatasetRequest and returns data to the optimizer."""
+    received_reflective: list = []
+
+    def fake_optimize(*, seed_candidate, trainset, adapter, **_):
+        # First evaluate with capture_traces=True to get trajectories.
+        batch = list(trainset)
+        eval_batch = adapter.evaluate(batch, dict(seed_candidate), capture_traces=True)
+        # Then request a reflective dataset.
+        reflective = adapter.make_reflective_dataset(
+            dict(seed_candidate), eval_batch, ["instructions"]
+        )
+        received_reflective.append(reflective)
+        return SimpleNamespace(
+            candidates=[dict(seed_candidate)],
+            best_idx=0,
+            val_aggregate_scores=[1.0],
+        )
+
+    req_q: queue.Queue = queue.Queue()
+    req_q.put(pb.ClientMessage(
+        start_request=pb.StartRequest(
+            run_id="reflect-test",
+            seed_candidate=_SEED,
+            trainset=_TRAINSET,
+            max_metric_calls=5,
+            reflection_lm="fake",
+        )
+    ))
+
+    def gen():
+        while True:
+            msg = req_q.get()
+            if msg is None:
+                return
+            yield msg
+
+    with patch("gepa_rpc.servicer.gepa.optimize", side_effect=fake_optimize):
+        call = stub.RunOptimization(gen())
+        for msg in call:
+            if msg.HasField("evaluate_batch_request"):
+                req = msg.evaluate_batch_request
+                # Respond with scores and trajectories (capture_traces=True).
+                req_q.put(pb.ClientMessage(
+                    evaluate_batch_response=pb.EvaluateBatchResponse(
+                        request_id=req.request_id,
+                        outputs=["ok"] * len(req.batch),
+                        scores=[1.0] * len(req.batch),
+                        trajectories=[
+                            pb.Trajectory(
+                                input_fields=dict(ex.fields),
+                                output="ok",
+                                feedback="correct",
+                            )
+                            for ex in req.batch
+                        ],
+                    )
+                ))
+            elif msg.HasField("reflective_dataset_request"):
+                req = msg.reflective_dataset_request
+                req_q.put(pb.ClientMessage(
+                    reflective_dataset_response=pb.ReflectiveDatasetResponse(
+                        request_id=req.request_id,
+                        reflective_data={
+                            "instructions": pb.ReflectiveComponentData(
+                                entries=[
+                                    pb.ReflectiveEntry(
+                                        inputs={"q": "2+2"},
+                                        generated_output="4",
+                                        feedback="correct",
+                                    )
+                                ]
+                            )
+                        },
+                    )
+                ))
+            elif msg.HasField("optimization_complete") or msg.HasField("optimization_error"):
+                req_q.put(None)
+                break
+
+    assert len(received_reflective) == 1
+    reflective = received_reflective[0]
+    assert "instructions" in reflective
+    entries = reflective["instructions"]
+    assert len(entries) == 1
+    assert entries[0]["Inputs"] == {"q": "2+2"}
+    assert entries[0]["Generated Outputs"] == "4"
+    assert entries[0]["Feedback"] == "correct"

@@ -43,6 +43,11 @@ message OmniStartRequest {
   repeated Example valset = 5;
   int32 max_evals = 6;
   string reflection_lm = 7;
+  // Optimize Anything backend to run: "gepa" (default), "autoresearch",
+  // "best_of_n", or "meta_harness". Empty defaults to "gepa". Only "gepa"
+  // currently gets reflection_lm applied and streams OmniProgressUpdate;
+  // other engines run to completion and report OmniOptimizationComplete only.
+  string engine = 8;
 }
 message StartRequest {
   string run_id = 1;
@@ -56,6 +61,16 @@ message OmniEvaluateBatchRequest {
   string request_id = 1;
   string candidate = 2;
   repeated Example batch = 3;
+  // Per-example warm-start history, aligned 1:1 with batch. Empty when
+  // the engine has no prior evaluations for an example yet.
+  repeated OmniOptimizationState opt_states = 4;
+}
+message OmniOptimizationState {
+  repeated OmniBestEval best_example_evals = 1;
+}
+message OmniBestEval {
+  float score = 1;
+  string side_info = 2;
 }
 message OmniEvaluateBatchResponse {
   string request_id = 1;

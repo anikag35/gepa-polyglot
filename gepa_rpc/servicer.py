@@ -246,7 +246,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                 callback = _ProgressCallback(outbound, start_req.max_metric_calls, run_status)
 
                 os.makedirs(run_dir, exist_ok=True)
-                result = gepa.optimize(
+                result = gepa.optimize(  # type: ignore[attr-defined]
                     seed_candidate=dict(start_req.seed_candidate),
                     trainset=trainset,
                     valset=valset,
@@ -254,7 +254,7 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                     reflection_lm=start_req.reflection_lm or DEFAULT_REFLECTION_LM,
                     max_metric_calls=max_metric_calls,
                     run_dir=run_dir,
-                    callbacks=[callback],
+                    callbacks=[callback],  # type: ignore[arg-type]
                     raise_on_exception=True,
                 )
 
@@ -345,7 +345,23 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                 ] or None
 
                 max_evals = start_req.max_evals or None
-                callback = _OmniProgressCallback(outbound, start_req.max_evals, run_status)
+                engine = start_req.engine or "gepa"
+
+                # Only the gepa engine's Config accepts {reflection, callbacks};
+                # autoresearch/best_of_n/meta_harness each have their own
+                # engine_config dataclass with unrelated fields, so passing this
+                # shape to them raises TypeError. Non-gepa runs fall back to
+                # each engine's own defaults and, for now, don't stream
+                # OmniProgressUpdate -- only the final OmniOptimizationComplete.
+                engine_config: dict[str, Any] = {}
+                if engine == "gepa":
+                    callback = _OmniProgressCallback(outbound, start_req.max_evals, run_status)
+                    engine_config = {
+                        "reflection": {
+                            "reflection_lm": start_req.reflection_lm or DEFAULT_REFLECTION_LM,
+                        },
+                        "callbacks": [callback],
+                    }
 
                 os.makedirs(run_dir, exist_ok=True)
                 result = optimize_anything(
@@ -355,24 +371,25 @@ class GEPAServicer(pb_grpc.GEPAServiceServicer):
                     valset=valset,
                     objective=start_req.objective or None,
                     config=OptimizeAnythingConfig(
-                        engine="gepa",
+                        engine=engine,
                         max_evals=max_evals,
                         run_dir=run_dir,
-                        sandbox=False,
-                        engine_config={
-                            "reflection": {
-                                "reflection_lm": start_req.reflection_lm or DEFAULT_REFLECTION_LM,
-                            },
-                            "callbacks": [callback],
-                        },
+                        # sandbox left at gepa's default (True): autoresearch/meta_harness
+                        # need it to jail their Claude Code agent subprocess.
+                        engine_config=engine_config,
                     ),
                 )
 
                 run_status["status"] = "complete"
+                raw_best = result.best_candidate
+                if isinstance(raw_best, dict):
+                    best_str = next(iter(raw_best.values()), "") if len(raw_best) == 1 else str(raw_best)
+                else:
+                    best_str = raw_best
                 outbound.put(pb.OmniServerMessage(
                     optimization_complete=pb.OmniOptimizationComplete(
                         run_id=run_id,
-                        best_candidate=result.best_candidate,
+                        best_candidate=best_str,
                         best_score=float(result.best_score),
                         total_evals=result.total_evals,
                     )

@@ -74,11 +74,26 @@ export interface ClientOptions {
 
 // ------------------------------------------------------------------ Omni types
 
+export interface OmniBestEval {
+  score: number;
+  sideInfo: unknown;
+}
+
+export interface OmniOptimizationState {
+  /** Top-K best prior evaluations for this example, sorted descending by score. */
+  bestExampleEvals: OmniBestEval[];
+}
+
 export interface OmniEvaluateBatchArgs {
   requestId: string;
   /** String candidate (prompt, code, instructions, etc.) */
   candidate: string;
   batch: Example[];
+  /**
+   * Per-example warm-start history, aligned 1:1 with `batch`. Empty when the
+   * server didn't send opt_states (e.g. an engine that doesn't produce them).
+   */
+  optStates: OmniOptimizationState[];
 }
 
 export interface OmniEvaluateBatchResult {
@@ -102,6 +117,13 @@ export interface OptimizeOmniOptions {
   valset?: Example[];
   objective?: string;
   reflectionLm?: string;
+  /**
+   * Optimize Anything backend: "gepa" (default), "autoresearch", "best_of_n",
+   * or "meta_harness". Only "gepa" applies reflectionLm and streams
+   * onProgress updates today; other engines run to completion and resolve
+   * with the final result only.
+   */
+  engine?: string;
   maxEvals?: number;
 
   evaluate: (args: OmniEvaluateBatchArgs) => Promise<OmniEvaluateBatchResult>;

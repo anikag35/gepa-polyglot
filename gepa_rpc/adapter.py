@@ -128,6 +128,24 @@ class RemoteAdapter(GEPAAdapter[RemoteExample, RemoteTrajectory, str]):
         return reflective_data_to_python(resp)
 
 
+def _opt_state_to_proto(opt_state: Any) -> pb.OmniOptimizationState:
+    """Convert an OptimizationState (or dict with the same shape) to proto."""
+    best_evals = getattr(opt_state, "best_example_evals", None)
+    if best_evals is None and isinstance(opt_state, dict):
+        best_evals = opt_state.get("best_example_evals")
+    entries = []
+    for e in best_evals or []:
+        score = e.get("score", 0.0) if isinstance(e, dict) else getattr(e, "score", 0.0)
+        side_info = e.get("side_info", {}) if isinstance(e, dict) else getattr(e, "side_info", {})
+        try:
+            side_info_json = json.dumps(side_info)
+        except TypeError:
+            # side_info may hold non-JSON values (e.g. an Image); fall back to a string repr.
+            side_info_json = json.dumps({"raw": str(side_info)})
+        entries.append(pb.OmniBestEval(score=float(score), side_info=side_info_json))
+    return pb.OmniOptimizationState(best_example_evals=entries)
+
+
 def _example_to_proto(ex: Any) -> pb.Example:
     """Convert a dataset example to a proto Example."""
     if isinstance(ex, dict):
@@ -189,29 +207,36 @@ class OmniRemoteEvaluator:
     def __call__(
         self,
         pairs: list[tuple[Any, Any]],
+        opt_states: list[Any] | None = None,
     ) -> list[tuple[float, dict[str, Any]]]:
         if not pairs:
             return []
 
         # Group by candidate. GEPA typically sends one candidate per call
-        # but the contract allows mixed batches
-        groups: dict[str, list[tuple[int, Any]]] = defaultdict(list)
+        # but the contract allows mixed batches. opt_states, when present,
+        # is aligned 1:1 with pairs -- carry each entry's state along.
+        groups: dict[str, list[tuple[int, Any, Any]]] = defaultdict(list)
         for idx, (candidate, example) in enumerate(pairs):
-            groups[str(candidate)].append((idx, example))
+            state = opt_states[idx] if opt_states is not None else None
+            groups[str(candidate)].append((idx, example, state))
 
         results: list[tuple[float, dict[str, Any]]] = [(0.0, {}) for _ in range(len(pairs))]
 
         for candidate_str, indexed_examples in groups.items():
-            indices = [i for i, _ in indexed_examples]
-            examples = [ex for _, ex in indexed_examples]
+            indices = [i for i, _, _ in indexed_examples]
+            examples = [ex for _, ex, _ in indexed_examples]
+            states = [st for _, _, st in indexed_examples]
+
+            request_kwargs: dict[str, Any] = dict(
+                candidate=candidate_str,
+                batch=[_example_to_proto(ex) for ex in examples],
+            )
+            if opt_states is not None:
+                request_kwargs["opt_states"] = [_opt_state_to_proto(st) for st in states]
 
             request_id, fut = self._new_pending()
             self._outbound.put(pb.OmniServerMessage(
-                evaluate_batch_request=pb.OmniEvaluateBatchRequest(
-                    request_id=request_id,
-                    candidate=candidate_str,
-                    batch=[_example_to_proto(ex) for ex in examples],
-                )
+                evaluate_batch_request=pb.OmniEvaluateBatchRequest(request_id=request_id, **request_kwargs)
             ))
             resp: pb.OmniEvaluateBatchResponse = fut.result()
 

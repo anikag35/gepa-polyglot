@@ -7,8 +7,10 @@ import type {
   EvaluateBatchArgs,
   EvaluateBatchResult,
   Example,
+  OmniBestEval,
   OmniEvaluateBatchArgs,
   OmniEvaluateBatchResult,
+  OmniOptimizationState,
   OmniProgressUpdate,
   OptimizeOmniOptions,
   OptimizeOmniResult,
@@ -205,6 +207,7 @@ export class Client {
           valset: (opts.valset ?? []).map((e) => ({ id: e.id, fields: e.fields })),
           objective: opts.objective ?? "",
           reflection_lm: opts.reflectionLm ?? "",
+          engine: opts.engine ?? "",
           max_evals: opts.maxEvals ?? 0,
         },
       });
@@ -223,6 +226,16 @@ export class Client {
         (e: any): Example => ({
           id: e.id,
           fields: mapToObject(e.fields),
+        }),
+      ),
+      optStates: (req.opt_states ?? []).map(
+        (s: any): OmniOptimizationState => ({
+          bestExampleEvals: (s.best_example_evals ?? []).map(
+            (e: any): OmniBestEval => ({
+              score: e.score,
+              sideInfo: parseSideInfo(e.side_info),
+            }),
+          ),
         }),
       ),
     };
@@ -303,6 +316,15 @@ export class Client {
         reflective_data,
       },
     });
+  }
+}
+
+function parseSideInfo(raw: string): unknown {
+  if (!raw) return {};
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { raw };
   }
 }
 
