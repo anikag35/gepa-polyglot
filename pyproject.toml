@@ -6,8 +6,17 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "gepa @ git+https://github.com/gepa-ai/gepa.git@2360e7ec87d70d149efe3c677447f16f0b932336",
-    "grpcio>=1.78.0",
-    "grpcio-tools>=1.78.0",
+    "grpcio>=1.80.0",
+    "grpcio-tools>=1.80.0",
+    # gepa's string reflection_lm goes through litellm, but the base `gepa`
+    # package only pulls litellm in behind its `full`/`confidence` extras.
+    # Depend on it directly so a plain `pip install .` (this repo's Dockerfile
+    # included) doesn't ship a server that fails on the first optimization run.
+    "litellm>=1.83.0,<1.92",
+    # litellm's completion_with_retries lazily imports tenacity but never
+    # declares it as a dependency; without it, reflection LM retries silently
+    # no-op and reflection proposals are dropped instead of retried.
+    "tenacity>=8.0.0",
 ]
 
 [project.scripts]
