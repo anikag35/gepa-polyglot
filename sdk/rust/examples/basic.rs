@@ -34,11 +34,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             valset: None,
             max_metric_calls: 20,
 
-            evaluate: |req| async move {
+            evaluate: |req: gepa_sdk::EvalRequest| async move {
                 let instructions =
                     req.candidate.get("instructions").unwrap_or("").to_lowercase();
                 let mut outputs = Vec::new();
                 let mut scores = Vec::new();
+                let mut trajectories = Vec::new();
 
                 for ex in &req.batch {
                     let expected =
@@ -49,6 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         ex.fields.get("input").cloned().unwrap_or_default()
                     };
                     let correct = output == expected;
+                    if req.capture_traces {
+                        trajectories.push(gepa_sdk::Trajectory {
+                            input_fields: ex.fields.clone(),
+                            output: output.clone(),
+                            feedback: if correct {
+                                format!("Correct: produced \"{}\".", expected)
+                            } else {
+                                format!("Wrong: expected \"{}\" but got \"{}\".", expected, output)
+                            },
+                        });
+                    }
                     outputs.push(output);
                     scores.push(if correct { 1.0 } else { 0.0 });
                 }
@@ -56,11 +68,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Ok(EvalResult {
                     outputs,
                     scores,
-                    trajectories: None,
+                    trajectories: if req.capture_traces { Some(trajectories) } else { None },
                 })
             },
 
-            make_reflective_dataset: |req| async move {
+            make_reflective_dataset: |req: gepa_sdk::ReflectiveRequest| async move {
                 let mut result = ReflectiveResult::new();
                 for comp in &req.components_to_update {
                     let entries = req
