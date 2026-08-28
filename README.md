@@ -7,7 +7,7 @@ GEPA-Polyglot is a bidirectional gRPC interface in front of [GEPA](https://githu
 Two endpoints are available:
 
 - **`RunOptimization`** wraps `gepa.optimize`. The client supplies structured `(trainset, valset, seed_candidate)` and implements `evaluate` + `makeReflectiveDataset`. Full multi-component prompt optimization.
-- **`RunOptimizationOmni`** wraps `optimize_anything`. The client supplies a single `evaluate(candidate, example) -> (score, side_info)` callback. Simpler contract; supports all engines (`gepa`, `autoresearch`, `best_of_n`, `meta_harness`).
+- **`RunOptimizationOmni`** wraps `optimize_anything`. The client supplies a single `evaluate(candidate, example) -> (score, side_info)` callback. Simpler contract; selectable across all engines registered in `gepa` (`gepa`, `autoresearch`, `best_of_n`, `meta_harness`) via `OmniStartRequest.engine` (defaults to `"gepa"`). **Caveat:** only the `gepa` engine applies `reflection_lm` and streams `OmniProgressUpdate`s today — other engines run to completion with their own defaults and report the final `OmniOptimizationComplete` only (no live progress).
 
 ```
             ┌──────────────────────────┐                 ┌──────────────────────────┐
@@ -54,9 +54,19 @@ npm install && npm run build
 npx tsx examples/basic.ts
 ```
 
-`examples/basic.ts` walks through the full `client.optimize()` API with a stand-in evaluator.
+`examples/basic.ts` walks through the full `client.optimize()` API with a stand-in evaluator; `examples/omni.ts` does the same for `client.optimizeOmni()`.
 
-### 3. Run integration tests
+### 3. Drive it from Rust
+
+```bash
+cd sdk/rust
+cargo run --example basic
+cargo run --example omni
+```
+
+`examples/basic.rs` walks through `Client::optimize()`; `examples/omni.rs` does the same for `Client::optimize_omni()`.
+
+### 4. Run integration tests
 
 ```bash
 python -m pytest tests/test_integration.py -v
@@ -77,11 +87,11 @@ gepa_rpc/                    Python server
   cli.py                     `gepa-rpc` console script
 sdk/typescript/              @gepa/sdk npm package
   src/{types,client,index}.ts
-  examples/basic.ts
+  examples/{basic,omni}.ts
   proto/gepa.proto           synced from repo root via scripts/sync-proto.sh
 sdk/rust/                    gepa-sdk Rust crate
   src/{client,types,error}.rs
-  examples/basic.rs
+  examples/{basic,omni}.rs
 scripts/compile_proto.sh     regenerates gepa_rpc/generated/ from proto/gepa.proto
 tests/test_integration.py    gRPC integration tests (pytest)
 ```
@@ -89,6 +99,9 @@ tests/test_integration.py    gRPC integration tests (pytest)
 ## Notes
 
 - `reflection_lm` defaults to `"openai/gpt-5.1"`. Override it per-run via `StartRequest.reflection_lm` or `OmniStartRequest.reflection_lm`.
+- `OmniStartRequest.engine` selects the Optimize Anything backend (`"gepa"` if unset). Only `gepa` gets `reflection_lm` applied and streams progress; `autoresearch`/`best_of_n`/`meta_harness` run with their own defaults and only report the final result. See the `RunOptimizationOmni` caveat above.
 - Disconnect-resume relies on `gepa.optimize`'s built-in `run_dir` checkpointing. Re-issue `RunOptimization` with the same `run_id` to resume.
 - The TypeScript SDK uses `@grpc/proto-loader` at runtime; user-facing types are hand-written in `sdk/typescript/src/types.ts`.
 - `OmniRemoteEvaluator` groups `(candidate, example)` pairs by candidate before sending each batch request, matching the `batch_evaluator` contract from `optimize_anything`.
+- `OmniEvaluateBatchRequest.opt_states` carries each example's top-K best prior evaluations (warm-start history), aligned 1:1 with `batch`, when the engine provides it. Empty on an example's first evaluation.
+- `pyproject.toml` depends on `litellm`/`tenacity` directly rather than via `gepa[full]`/`gepa[confidence]` -- the base `gepa` package doesn't pull litellm in on its own, and reflection_lm calls fail immediately without it.
