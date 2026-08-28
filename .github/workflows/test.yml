@@ -8,6 +8,7 @@ on:
 jobs:
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -17,3 +18,17 @@ jobs:
         run: pip install -e ".[dev]"
       - name: Run integration tests
         run: pytest tests/test_integration.py -v
+
+  rust-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: sdk/rust
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.75'
+      - run: cargo check

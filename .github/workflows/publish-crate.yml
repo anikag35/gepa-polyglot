@@ -17,6 +17,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: '1.75'
+      - run: cargo check
       - run: cargo publish
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
